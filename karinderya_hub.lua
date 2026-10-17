@@ -1,10 +1,16 @@
--- Karinderya hub by DEV_TONYO
+-- Karinderya Hub (rebuilt, English). Based on the original by DEV_TONYO.
+-- Global chat, players online, announcements: Firebase Realtime Database. Owner panel only for OWNER_NAME.
 
 local AUTO_START = true                   -- farm and hop turn on by themselves
 local SCRIPT_FILE = "karinderya_hub.lua"  -- save this script under this name in your executor's workspace folder
 local SCRIPT_URL = ""                     -- or paste a raw link to the script here instead
 local DEFAULT_WEBHOOK = ""
 local MAX_TRIES = 5                       -- tries per stall before we skip it
+
+local DISCORD_LINK = "https://discord.gg/tCvbWrtbN"
+-- Announcements: only this Roblox username gets the panel and can send them
+local OWNER_NAME = "dador_1234567"
+local CHAT_DB_URL = "https://karinderya-83628-default-rtdb.firebaseio.com"  -- your Firebase Realtime Database link
 
 local FOLDER = "DEV_TONYO_Hub"
 local CONFIG_FILE = FOLDER .. "/config.json"
@@ -28,10 +34,6 @@ local TweenService = game:GetService("TweenService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local VirtualUser = game:GetService("VirtualUser")
 local plr = Players.LocalPlayer
-
-local OWNER_NAME = "dador_1234567"
-local isOwner = (plr.Name == OWNER_NAME) or (plr.DisplayName == OWNER_NAME)
-local DISCORD_LINK = "https://discord.gg/tCvbWrtbN"
 
 -- these only exist on some executors
 local http = request or http_request or (syn and syn.request) or (fluxus and fluxus.request)
@@ -89,7 +91,19 @@ local cfg = {
     hookHop = true,
     hookDone = true,
     reportEvery = 0,       -- minutes, 0 = off
-    accepted = false,      -- join community accept
+    showAnnounce = true,
+    lastAnnounce = 0,
+    shareServer = false,   -- show my server in the Players Online list (off until you turn it on)
+    announceSound = true,
+    hopHold = 0,           -- auto hop stays paused until this time (set when you join someone)
+    hookKick = true,       -- webhook when you get disconnected
+    speedOn = false,
+    walkSpeed = 24,
+    infJump = false,
+    lowGfx = false,
+    noRender = false,
+    repeatMin = 0,         -- redo every stall this often once they are all done, 0 = off
+    hopNoStalls = true,    -- hop if no stalls show up in a server
 }
 
 for k, v in pairs(readJson(CONFIG_FILE, {})) do
@@ -229,6 +243,7 @@ local pal = {
     purple = Color3.fromRGB(170, 80, 230),
     grey = Color3.fromRGB(140, 140, 148),
     cash = Color3.fromRGB(96, 255, 80),
+    teal = Color3.fromRGB(40, 200, 190),
 }
 
 local function new(class, props, parent)
@@ -319,7 +334,7 @@ if not pcall(function() gui.Parent = (gethui and gethui()) or game:GetService("C
     gui.Parent = plr:WaitForChild("PlayerGui")
 end
 
-local WIDTH, HEIGHT = 500, 350
+local WIDTH, HEIGHT = 520, 350
 
 local win = new("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5),
@@ -359,7 +374,7 @@ new("Frame", {
     BorderSizePixel = 0,
 }, header)
 
-local avatar = new("Frame", {
+local avatar = new("ImageLabel", {
     Position = UDim2.fromOffset(10, 8),
     Size = UDim2.fromOffset(40, 40),
     BackgroundColor3 = Color3.fromRGB(90, 60, 36),
@@ -367,14 +382,6 @@ local avatar = new("Frame", {
 }, header)
 corner(avatar, 20)
 outline(avatar, pal.white, 2)
-text(avatar, "Tonyo", {
-    Size = UDim2.fromScale(1, 1),
-    TextSize = 11,
-    TextXAlignment = Enum.TextXAlignment.Center,
-    TextYAlignment = Enum.TextYAlignment.Center,
-    TextColor3 = pal.gold,
-    TextStrokeTransparency = 0.2,
-})
 
 local dot = new("Frame", {
     Position = UDim2.fromOffset(38, 36),
@@ -399,6 +406,15 @@ text(header, "@" .. plr.Name .. "  -  " .. plr.DisplayName, {
     TextTruncate = Enum.TextTruncate.AtEnd,
 })
 
+task.spawn(function()
+    local ok, img = pcall(function()
+        return (Players:GetUserThumbnailAsync(plr.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100))
+    end)
+    if ok and img then
+        avatar.Image = img
+    end
+end)
+
 local minHolder, minBtn = chunky(header, "-", pal.blue, UDim2.fromOffset(30, 30), 20)
 minHolder.AnchorPoint = Vector2.new(1, 0.5)
 minHolder.Position = UDim2.new(1, -46, 0.5, -1)
@@ -407,21 +423,18 @@ closeHolder.AnchorPoint = Vector2.new(1, 0.5)
 closeHolder.Position = UDim2.new(1, -10, 0.5, -1)
 
 -- small bubble when minimized
-local bubble = new("TextButton", {
+local bubble = new("ImageButton", {
     Position = UDim2.new(0, 14, 0.5, -24),
     Size = UDim2.fromOffset(48, 48),
     BackgroundColor3 = pal.wood,
     BorderSizePixel = 0,
     Visible = false,
-    Text = "Tonyo",
-    Font = Enum.Font.FredokaOne,
-    TextSize = 12,
-    TextColor3 = pal.gold,
-    TextStrokeColor3 = pal.dark,
-    TextStrokeTransparency = 0.2,
 }, gui)
 corner(bubble, 24)
 outline(bubble, pal.gold, 3)
+on(avatar:GetPropertyChangedSignal("Image"), function()
+    bubble.Image = avatar.Image
+end)
 
 local function minimize(state)
     win.Visible = not state
@@ -484,21 +497,16 @@ local function addTab(name, color)
         Size = UDim2.new(1, -16, 1, -8),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        ScrollBarThickness = 6,
+        ScrollBarThickness = 4,
         ScrollBarImageColor3 = pal.gold,
-        ScrollBarImageTransparency = 0,
         AutomaticCanvasSize = Enum.AutomaticSize.Y,
-        CanvasSize = UDim2.new(0, 0, 0, 0),
-        ScrollingEnabled = true,
+        CanvasSize = UDim2.new(),
         Visible = false,
     }, body)
-    local layout = new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
-    new("UIPadding", { PaddingRight = UDim.new(0, 10), PaddingBottom = UDim.new(0, 20), PaddingTop = UDim.new(0, 2) }, page)
-    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        page.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 30)
-    end)
+    new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
+    new("UIPadding", { PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 10), PaddingTop = UDim.new(0, 2) }, page)
 
-    local holder, btn, line = chunky(tabBar, name, color, UDim2.new(0.16, -3, 1, 0), 12)
+    local holder, btn, line = chunky(tabBar, name, color, UDim2.new(1 / 7, -4, 1, 0), 12)
     tabs[name] = { page = page, holder = holder, line = line, dark = color:Lerp(pal.dark, 0.65) }
     on(btn.Activated, function()
         pop(holder)
@@ -518,10 +526,11 @@ end
 
 local mainPage = addTab("Main", pal.green)
 local chatPage = addTab("Chat", pal.orange)
+local globalPage = addTab("Global", pal.teal)
+addTab("Tools", pal.gold)
 local setPage = addTab("Settings", pal.blue)
 local hookPage = addTab("Webhook", pal.purple)
 local logPage = addTab("Log", pal.grey)
-local globalPage = addTab("Global", pal.purple)
 
 -- building blocks for the pages
 local function card(page, height)
@@ -537,7 +546,7 @@ local function card(page, height)
 end
 
 local function section(page, str)
-    text(page, str, { Size = UDim2.new(1, 0, 0, 22), TextSize = 15, TextColor3 = pal.gold })
+    return text(page, str, { Size = UDim2.new(1, 0, 0, 22), TextSize = 15, TextColor3 = pal.gold })
 end
 
 local function infoRow(page, key)
@@ -598,6 +607,7 @@ local function toggle(page, name, default, callback)
         draw(true)
         task.spawn(callback, state)
     end)
+    return row
 end
 
 local function slider(page, name, min, max, default, suffix, callback)
@@ -766,6 +776,17 @@ local function log(msg)
     end)
 end
 
+local function copyDiscord()
+    local copy = setclipboard or toclipboard
+    if copy then
+        copy(DISCORD_LINK)
+        notify("Discord", "Invite link copied", 3)
+    else
+        notify("Discord", DISCORD_LINK, 6)
+    end
+    log("Discord: " .. DISCORD_LINK)
+end
+
 -- main page
 section(mainPage, "Live Status")
 local setStatus = infoRow(mainPage, "Status")
@@ -773,6 +794,7 @@ local setTimer = infoRow(mainPage, "Next hop")
 local setServer = infoRow(mainPage, "Server")
 local setStalls = infoRow(mainPage, "Stalls")
 local setSession = infoRow(mainPage, "Session")
+local setRate = infoRow(mainPage, "Per hour")
 
 section(mainPage, "Controls")
 toggle(mainPage, "Auto walk and press prompts", AUTO_START, function(v)
@@ -783,7 +805,7 @@ toggle(mainPage, "Auto walk and press prompts", AUTO_START, function(v)
         status = "Auto farm is off"
     end
 end)
-toggle(mainPage, "Auto server hop", AUTO_START, function(v)
+toggle(mainPage, "Auto server hop", AUTO_START and os.time() >= cfg.hopHold, function(v)
     hopOn = v
     if v then startHopTimer() end
 end)
@@ -800,6 +822,7 @@ end)
 button(mainPage, "Hop to a new server now", pal.orange, function()
     hop()
 end)
+button(mainPage, "Join our Discord", pal.blue, copyDiscord)
 
 -- chat page
 section(chatPage, "Chat Message")
@@ -907,94 +930,917 @@ toggle(hookPage, "Every stall is done", cfg.hookDone, function(v)
     cfg.hookDone = v
     saveCfg()
 end)
+toggle(hookPage, "You get disconnected or kicked", cfg.hookKick, function(v)
+    cfg.hookKick = v
+    saveCfg()
+end)
 slider(hookPage, "Status report every (0 = off)", 0, 60, cfg.reportEvery, " min", function(v)
     cfg.reportEvery = v
     saveCfg()
 end)
 local testBtn = button(hookPage, "Send a test message", pal.purple, function() end)
 
--- global page
-section(globalPage, "Community Discord")
-text(globalPage, "Join the global chat and get updates. All script users share this Discord.", {
-    Size = UDim2.new(1, 0, 0, 0),
-    AutomaticSize = Enum.AutomaticSize.Y,
-    TextWrapped = true,
-    TextSize = 13,
-    TextColor3 = Color3.fromRGB(235, 215, 180),
-})
-button(globalPage, "Copy Discord Link", pal.purple, function()
-    if setclipboard then
-        setclipboard(DISCORD_LINK)
-        notify("Discord", "Link copied to clipboard", 3)
-    else
-        notify("Discord", DISCORD_LINK, 5)
+-- global tab: global chat (all servers), players online + join, announcement banner, owner panel
+-- uses your Firebase Realtime Database (CHAT_DB_URL at the top). Only OWNER_NAME gets the owner panel.
+;(function()
+    local OWNER = OWNER_NAME:lower()
+    local isOwner = plr.Name:lower() == OWNER
+    local DB = CHAT_DB_URL:gsub("/+$", "")
+    local ownerId, ownerAvatar
+    local banned, bans = false, {}
+    local seen = {}
+
+    -- owner login: Firebase email + password (the password is never saved, only a refresh token)
+    local OWNER_FILE = FOLDER .. "/owner.json"
+    local ownerAuth = { apiKey = "", email = "", refresh = "" }
+    local ownerToken, tokenExpiry = "", 0
+    if isOwner then
+        local saved = readJson(OWNER_FILE, {})
+        for k in pairs(ownerAuth) do
+            if type(saved[k]) == "string" then ownerAuth[k] = saved[k] end
+        end
     end
-    log("Discord link: " .. DISCORD_LINK)
-end)
-text(globalPage, DISCORD_LINK, {
-    Size = UDim2.new(1, 0, 0, 20),
-    TextSize = 12,
-    TextColor3 = pal.cash,
-    TextXAlignment = Enum.TextXAlignment.Center,
-})
+    local function saveOwnerAuth()
+        writeJson(OWNER_FILE, ownerAuth)
+    end
 
-section(globalPage, "Global Chat")
-text(globalPage, "Messages you send appear here and go out to all script users via the shared channel. Join Discord to talk live with everyone.", {
-    Size = UDim2.new(1, 0, 0, 0),
-    AutomaticSize = Enum.AutomaticSize.Y,
-    TextWrapped = true,
-    TextSize = 12,
-    TextColor3 = Color3.fromRGB(235, 215, 180),
-})
+    local function authPost(url, body, asForm)
+        if not http then return nil end
+        local ok, res = pcall(http, {
+            Url = url,
+            Method = "POST",
+            Headers = { ["Content-Type"] = asForm and "application/x-www-form-urlencoded" or "application/json" },
+            Body = body,
+        })
+        if not ok or type(res) ~= "table" then return nil end
+        local data
+        pcall(function() data = HttpService:JSONDecode(res.Body) end)
+        local code = res.StatusCode or res.status_code
+        if not code or code < 200 or code >= 300 then return nil, data end
+        return data
+    end
 
-local chatLog = new("ScrollingFrame", {
-    Size = UDim2.new(1, 0, 0, 140),
-    BackgroundColor3 = Color3.fromRGB(40, 25, 14),
-    BorderSizePixel = 0,
-    ScrollBarThickness = 5,
-    ScrollBarImageColor3 = pal.gold,
-    AutomaticCanvasSize = Enum.AutomaticSize.Y,
-    CanvasSize = UDim2.new(),
-}, globalPage)
-corner(chatLog, 8)
-outline(chatLog, pal.dark, 2)
-local chatLayout = new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, chatLog)
-new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6), PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4) }, chatLog)
-chatLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    chatLog.CanvasSize = UDim2.new(0, 0, 0, chatLayout.AbsoluteContentSize.Y + 10)
-    chatLog.CanvasPosition = Vector2.new(0, chatLog.AbsoluteCanvasSize.Y)
-end)
+    local function signIn(email, password)
+        local data, err = authPost(
+            "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" .. ownerAuth.apiKey,
+            HttpService:JSONEncode({ email = email, password = password, returnSecureToken = true })
+        )
+        if not data or not data.idToken then
+            local why = type(err) == "table" and err.error and err.error.message
+            return false, why or "no answer from Firebase"
+        end
+        ownerToken = data.idToken
+        tokenExpiry = os.time() + (tonumber(data.expiresIn) or 3600) - 120
+        ownerAuth.email = email
+        ownerAuth.refresh = data.refreshToken or ""
+        saveOwnerAuth()
+        return true
+    end
 
-local chatMsgN = 0
-local function addChatMsg(from, msg, isAnn)
-    chatMsgN = chatMsgN + 1
-    local color = isAnn and pal.gold or pal.white
-    local label = new("TextLabel", {
-        LayoutOrder = chatMsgN,
-        Size = UDim2.new(1, 0, 0, 0),
-        AutomaticSize = Enum.AutomaticSize.Y,
+    local function refreshToken()
+        if ownerAuth.refresh == "" or ownerAuth.apiKey == "" then return false end
+        local data = authPost(
+            "https://securetoken.googleapis.com/v1/token?key=" .. ownerAuth.apiKey,
+            "grant_type=refresh_token&refresh_token=" .. HttpService:UrlEncode(ownerAuth.refresh),
+            true
+        )
+        if not data or not data.id_token then return false end
+        ownerToken = data.id_token
+        tokenExpiry = os.time() + (tonumber(data.expires_in) or 3600) - 120
+        if data.refresh_token then
+            ownerAuth.refresh = data.refresh_token
+            saveOwnerAuth()
+        end
+        return true
+    end
+
+    local function isAdmin()
+        return isOwner and ownerToken ~= ""
+    end
+    if isOwner and ownerAuth.refresh ~= "" then
+        task.spawn(refreshToken)
+    end
+
+    -- gives back success, data
+    local function dbCall(method, path, body, useKey, query)
+        if DB == "" or not http then return false end
+
+        local url = DB .. path .. ".json"
+        local parts = {}
+        if useKey and isOwner then
+            if os.time() >= tokenExpiry then refreshToken() end
+            if ownerToken ~= "" then table.insert(parts, "auth=" .. ownerToken) end
+        end
+        if query then table.insert(parts, query) end
+        if #parts > 0 then
+            url = url .. "?" .. table.concat(parts, "&")
+        end
+
+        local ok, res = pcall(http, {
+            Url = url,
+            Method = method,
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = body ~= nil and HttpService:JSONEncode(body) or nil,
+        })
+        if not ok or type(res) ~= "table" then return false end
+
+        local code = res.StatusCode or res.status_code
+        if not code or code < 200 or code >= 300 then return false end
+
+        local data
+        pcall(function() data = HttpService:JSONDecode(res.Body) end)
+        return true, data
+    end
+
+    -- roblox doesn't filter this chat, so strip the obvious stuff ourselves
+    local function cleanText(s, fromAdmin)
+        s = tostring(s):gsub("%c", " ")
+        if not fromAdmin then
+            s = s:gsub("https?://%S+", "[link]"):gsub("[Dd][Ii][Ss][Cc][Oo][Rr][Dd]%.[Gg][Gg]%S*", "[link]")
+        end
+        return s:match("^%s*(.-)%s*$")
+    end
+
+    local function esc(s)
+        return (tostring(s):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"))
+    end
+
+    local function ownerInfo()
+        if not ownerId then
+            pcall(function() ownerId = Players:GetUserIdFromNameAsync(OWNER_NAME) end)
+        end
+        if ownerId and not ownerAvatar then
+            pcall(function()
+                ownerAvatar = Players:GetUserThumbnailAsync(ownerId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+            end)
+        end
+        return ownerId, ownerAvatar
+    end
+
+    -- big announcement banner (slides down from the top, shows the owner's avatar)
+    local function playBanner(msg, secs)
+        local _, avatar = ownerInfo()
+
+        local b = new("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0),
+            Position = UDim2.new(0.5, 0, 0, -130),
+            Size = UDim2.new(0.92, 0, 0, 104),
+            BackgroundColor3 = pal.white,
+            BorderSizePixel = 0,
+            ClipsDescendants = true,
+            ZIndex = 50,
+        }, gui)
+        new("UISizeConstraint", { MaxSize = Vector2.new(540, 104) }, b)
+        corner(b, 14)
+        grad(b, Color3.fromRGB(70, 44, 24), Color3.fromRGB(22, 13, 7))
+
+        local stroke = outline(b, pal.gold, 3)
+        local sg = new("UIGradient", {
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, pal.gold),
+                ColorSequenceKeypoint.new(0.5, pal.white),
+                ColorSequenceKeypoint.new(1, pal.gold),
+            }),
+        }, stroke)
+
+        local img = new("ImageLabel", {
+            Position = UDim2.fromOffset(14, 14),
+            Size = UDim2.fromOffset(76, 76),
+            BackgroundColor3 = pal.dark,
+            Image = avatar or "",
+        }, b)
+        new("UICorner", { CornerRadius = UDim.new(1, 0) }, img)
+        outline(img, pal.gold, 3)
+
+        text(b, OWNER_NAME .. " announces:", {
+            Position = UDim2.fromOffset(104, 10),
+            Size = UDim2.new(1, -116, 0, 22),
+            TextSize = 18,
+            TextColor3 = pal.gold,
+        })
+        text(b, msg, {
+            Position = UDim2.fromOffset(104, 34),
+            Size = UDim2.new(1, -116, 0, 62),
+            TextSize = 16,
+            TextWrapped = true,
+            TextYAlignment = Enum.TextYAlignment.Top,
+        })
+
+        local bar = new("Frame", {
+            Position = UDim2.new(0, 0, 1, -5),
+            Size = UDim2.new(1, 0, 0, 5),
+            BackgroundColor3 = pal.gold,
+            BorderSizePixel = 0,
+        }, b)
+
+        if cfg.announceSound then
+            pcall(function()
+                local snd = new("Sound", { SoundId = "rbxasset://sounds/electronicpingshort.wav", Volume = 0.7 }, gui)
+                snd:Play()
+                task.delay(3, function() snd:Destroy() end)
+            end)
+        end
+
+        task.spawn(function() -- the border shimmer
+            local rot = 0
+            while b.Parent and alive do
+                rot = (rot + 4) % 360
+                sg.Rotation = rot
+                task.wait(0.03)
+            end
+        end)
+
+        TweenService:Create(b, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Position = UDim2.new(0.5, 0, 0, 14),
+        }):Play()
+        TweenService:Create(bar, TweenInfo.new(secs, Enum.EasingStyle.Linear), { Size = UDim2.new(0, 0, 0, 5) }):Play()
+        task.wait(secs)
+
+        TweenService:Create(b, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Position = UDim2.new(0.5, 0, 0, -130),
+        }):Play()
+        task.wait(0.45)
+        b:Destroy()
+    end
+
+    local queue, playing = {}, false
+    local function showBanner(msg, secs)
+        table.insert(queue, { msg = msg, secs = secs or 8 })
+        if playing then return end
+        playing = true
+        task.spawn(function()
+            while alive and #queue > 0 do
+                local item = table.remove(queue, 1)
+                pcall(playBanner, item.msg, item.secs)
+            end
+            playing = false
+        end)
+    end
+
+    local function joinServer(placeId, jobId)
+        cfg.hopHold = os.time() + 15 * 60 -- keeps auto hop from throwing you out right away
+        writeJson(CONFIG_FILE, cfg)
+        saveStatsNow()
+        local code = reloadCode()
+        if queueTp and code then pcall(queueTp, code) end
+        log("Joining server " .. tostring(jobId):sub(1, 8) .. "...")
+        if not pcall(function() TeleportService:TeleportToPlaceInstance(placeId, jobId, plr) end) then
+            notify("Join", "Couldn't start the teleport", 3)
+        end
+    end
+
+    local function validJob(j)
+        return type(j) == "string" and #j >= 30 and j:match("^[%x%-]+$") ~= nil
+    end
+
+    -- chat feed
+    section(globalPage, "Global Chat")
+    if DB == "" or not http then
+        text(globalPage, "Global chat needs a Firebase link in CHAT_DB_URL and an executor with http requests.", {
+            Size = UDim2.new(1, 0, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            TextWrapped = true,
+            TextSize = 12,
+            TextColor3 = pal.red,
+        })
+    end
+
+    local feedCard = card(globalPage, 190)
+    local feed = new("ScrollingFrame", {
+        Position = UDim2.fromOffset(6, 6),
+        Size = UDim2.new(1, -12, 1, -12),
         BackgroundTransparency = 1,
-        Text = (isAnn and "[ANNOUNCEMENT] " or "") .. from .. ": " .. msg,
-        Font = Enum.Font.GothamMedium,
-        TextSize = 12,
-        TextColor3 = color,
-        TextWrapped = true,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    }, chatLog)
-    while #chatLog:GetChildren() > 60 do
-        for _, c in ipairs(chatLog:GetChildren()) do
-            if c:IsA("TextLabel") then
-                c:Destroy()
-                break
+        BorderSizePixel = 0,
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = pal.dark,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    }, feedCard)
+    new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, feed)
+
+    local lineN, lines = 0, {}
+    local function addLine(rich)
+        lineN = lineN + 1
+        local l = text(feed, rich, {
+            LayoutOrder = lineN,
+            Size = UDim2.new(1, -8, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            TextSize = 13,
+            TextWrapped = true,
+            RichText = true,
+            TextYAlignment = Enum.TextYAlignment.Top,
+        })
+        table.insert(lines, l)
+        if #lines > 80 then
+            table.remove(lines, 1):Destroy()
+        end
+        task.defer(function()
+            task.wait()
+            if feed.Parent then
+                feed.CanvasPosition = Vector2.new(0, feed.AbsoluteCanvasSize.Y)
+            end
+        end)
+    end
+    addLine('<font color="#c8c8c8">Global chat: everyone using the script, in every server.</font>')
+
+    local function renderMessage(m)
+        local user = tostring(m.u or "?")
+        if bans[user:lower()] == true then return end
+        local fromAdmin = m.o == true -- only the owner account can set this flag
+        local who = esc(m.d or user)
+        if fromAdmin then
+            who = '<font color="#ffc43c"><b>[OWNER] ' .. who .. '</b></font>'
+        elseif user == plr.Name then
+            who = '<font color="#46c846"><b>' .. who .. '</b></font>'
+        else
+            who = '<b>' .. who .. '</b>'
+        end
+        addLine(who .. ": " .. esc(cleanText(m.m, fromAdmin):sub(1, 150)))
+    end
+
+    local function pullMessages()
+        local ok, data = dbCall("GET", "/chat", nil, false, "orderBy=%22%24key%22&limitToLast=30")
+        if not ok or type(data) ~= "table" then return end
+        local keys = {}
+        for k in pairs(data) do table.insert(keys, k) end
+        table.sort(keys)
+        for _, k in ipairs(keys) do
+            if not seen[k] then
+                seen[k] = true
+                local m = data[k]
+                if type(m) == "table" and type(m.m) == "string" then
+                    renderMessage(m)
+                end
             end
         end
     end
-end
 
-addChatMsg("System", "Global chat ready. Type below and send.", false)
+    local function pullBans()
+        local ok, data = dbCall("GET", "/bans")
+        if ok then
+            bans = type(data) == "table" and data or {}
+            banned = bans[plr.Name:lower()] == true
+        end
+    end
 
-local chatInput = textBox(globalPage, "Your message", "Type global message here", "")
-local sendChatBtn = button(globalPage, "Send Global Message", pal.green, function() end)
+    -- message box
+    local inputCard = card(globalPage, 46)
+    local input = new("TextBox", {
+        Position = UDim2.fromOffset(8, 8),
+        Size = UDim2.new(1, -106, 0, 30),
+        BackgroundColor3 = Color3.fromRGB(48, 30, 17),
+        Text = "",
+        PlaceholderText = "Type a message...",
+        PlaceholderColor3 = Color3.fromRGB(160, 135, 105),
+        TextColor3 = pal.white,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 13,
+        ClearTextOnFocus = false,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, inputCard)
+    corner(input, 7)
+    outline(input, pal.dark, 2)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, input)
+
+    local sendHolder, sendBtn = chunky(inputCard, "Send", pal.orange, UDim2.fromOffset(80, 30), 15)
+    sendHolder.Position = UDim2.new(1, -88, 0, 8)
+
+    local lastSend = 0
+    local function send()
+        local raw = input.Text:match("^%s*(.-)%s*$")
+        if raw == "" then return end
+
+        if isAdmin() then
+            local cmd, name = raw:match("^/(%a+)%s+([%w_]+)%s*$")
+            local clear = raw:match("^/clear%s*$")
+            if cmd == "ban" or cmd == "unban" or clear then
+                local ok
+                if clear then
+                    ok = dbCall("DELETE", "/chat", nil, true)
+                elseif cmd == "ban" then
+                    ok = dbCall("PUT", "/bans/" .. name:lower(), true, true)
+                else
+                    ok = dbCall("DELETE", "/bans/" .. name:lower(), nil, true)
+                end
+                input.Text = ""
+                if ok then
+                    notify("Moderation", clear and "Chat cleared" or (name .. (cmd == "ban" and " was banned" or " was unbanned")), 3)
+                    pullBans()
+                else
+                    notify("Moderation", "That didn't work, sign in again", 3)
+                end
+                return
+            end
+        end
+
+        if banned then
+            notify("Global chat", "You are banned from the global chat", 3)
+            return
+        end
+        if os.clock() - lastSend < 3 then
+            notify("Global chat", "Slow down a little", 2)
+            return
+        end
+
+        local msg = cleanText(raw, isAdmin()):sub(1, 150)
+        if msg == "" then return end
+        lastSend = os.clock()
+        input.Text = ""
+
+        local body = { u = plr.Name, d = plr.DisplayName, m = msg, t = { [".sv"] = "timestamp" } }
+        if isAdmin() then body.o = true end
+        if dbCall("POST", "/chat", body, isAdmin()) then
+            pullMessages()
+        else
+            notify("Global chat", "Message didn't send", 3)
+        end
+    end
+    on(sendBtn.Activated, function()
+        pop(sendHolder)
+        send()
+    end)
+    on(input.FocusLost, function(enterPressed)
+        if enterPressed then send() end
+    end)
+
+    -- join the owner: uses the Players Online list first, then falls back to the friends lookup
+    button(globalPage, "Join owner's server", pal.green, function()
+        if isOwner then
+            notify("Join", "That's you", 2)
+            return
+        end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Name:lower() == OWNER then
+                notify("Join", "The owner is already in this server", 3)
+                return
+            end
+        end
+
+        local id = ownerInfo()
+        if not id then
+            notify("Join", "Couldn't look up the owner", 3)
+            return
+        end
+
+        notify("Join", "Looking for the owner...", 2)
+        local ok, e = dbCall("GET", "/online/" .. id)
+        if ok and type(e) == "table" and validJob(e.j) and type(e.t) == "number"
+            and math.abs(os.time() * 1000 - e.t) < 180000 then
+            joinServer(tonumber(e.p) or game.PlaceId, e.j)
+            return
+        end
+
+        local ok2, _, _, placeId, instanceId = pcall(function()
+            return TeleportService:GetPlayerPlaceInstanceAsync(id)
+        end)
+        if ok2 and placeId and instanceId then
+            joinServer(placeId, instanceId)
+        else
+            notify("Join", "Owner isn't sharing a server right now", 4)
+        end
+    end)
+
+    -- players online
+    section(globalPage, "Players Online")
+    toggle(globalPage, "Share my server so others can join me", cfg.shareServer, function(v)
+        cfg.shareServer = v
+        saveCfg()
+        if not v then
+            dbCall("DELETE", "/online/" .. plr.UserId)
+        end
+    end)
+
+    local listCard = card(globalPage, 176)
+    local listScroll = new("ScrollingFrame", {
+        Position = UDim2.fromOffset(6, 6),
+        Size = UDim2.new(1, -12, 1, -12),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = pal.dark,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    }, listCard)
+    new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, listScroll)
+
+    local onlineRows = {}
+    local function pullOnline()
+        local ok, data = dbCall("GET", "/online")
+        if not ok then return end
+        for _, r in ipairs(onlineRows) do r:Destroy() end
+        onlineRows = {}
+        if type(data) ~= "table" then data = {} end
+
+        local newest = 0
+        for _, e in pairs(data) do
+            if type(e) == "table" and type(e.t) == "number" and e.t > newest then newest = e.t end
+        end
+
+        local entries = {}
+        for _, e in pairs(data) do
+            if type(e) == "table" and type(e.t) == "number" and newest - e.t < 100000 and validJob(e.j) then
+                e.owner = tostring(e.u or ""):lower() == OWNER
+                table.insert(entries, e)
+            end
+        end
+        table.sort(entries, function(a, b)
+            if a.owner ~= b.owner then return a.owner end
+            return (tonumber(a.n) or 0) < (tonumber(b.n) or 0)
+        end)
+
+        if #entries == 0 then
+            local l = text(listScroll, "Nobody is sharing a server right now.", {
+                Size = UDim2.new(1, -8, 0, 24),
+                TextSize = 12,
+                TextColor3 = Color3.fromRGB(235, 215, 180),
+            })
+            table.insert(onlineRows, l)
+            return
+        end
+
+        for i, e in ipairs(entries) do
+            local here = e.j == game.JobId
+            local row = new("Frame", {
+                LayoutOrder = i,
+                Size = UDim2.new(1, -8, 0, 30),
+                BackgroundColor3 = Color3.fromRGB(48, 30, 17),
+                BorderSizePixel = 0,
+            }, listScroll)
+            corner(row, 7)
+            local label = (e.owner and "[OWNER] " or "") .. tostring(e.d or e.u or "?")
+                .. "  (" .. tostring(tonumber(e.n) or "?") .. " in server)"
+            text(row, label, {
+                Position = UDim2.fromOffset(8, 0),
+                Size = UDim2.new(1, -78, 1, 0),
+                TextSize = 12,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                TextColor3 = e.owner and pal.gold or pal.white,
+            })
+            if here then
+                text(row, "here", {
+                    Position = UDim2.new(1, -62, 0, 0),
+                    Size = UDim2.fromOffset(56, 30),
+                    TextXAlignment = Enum.TextXAlignment.Center,
+                    TextSize = 12,
+                    TextColor3 = pal.grey,
+                })
+            else
+                local h, b = chunky(row, "Join", pal.green, UDim2.fromOffset(56, 22), 13)
+                h.Position = UDim2.new(1, -62, 0, 4)
+                on(b.Activated, function()
+                    pop(h)
+                    joinServer(tonumber(e.p) or game.PlaceId, e.j)
+                end)
+            end
+            table.insert(onlineRows, row)
+        end
+    end
+
+    local function pushOnline()
+        if not cfg.shareServer or banned or game.JobId == "" then return end
+        dbCall("PUT", "/online/" .. plr.UserId, {
+            u = plr.Name,
+            d = plr.DisplayName,
+            j = game.JobId,
+            p = game.PlaceId,
+            n = #Players:GetPlayers(),
+            t = { [".sv"] = "timestamp" },
+        })
+    end
+
+    button(globalPage, "Refresh player list", pal.gold, function()
+        pullOnline()
+    end)
+
+    -- announcements
+    section(globalPage, "Announcements")
+    local announceLabel = text(globalPage, "No announcements yet.", {
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        TextWrapped = true,
+        TextSize = 13,
+        TextColor3 = pal.gold,
+    })
+    toggle(globalPage, "Show announcement banners", cfg.showAnnounce, function(v)
+        cfg.showAnnounce = v
+        saveCfg()
+    end)
+    toggle(globalPage, "Banner sound", cfg.announceSound, function(v)
+        cfg.announceSound = v
+        saveCfg()
+    end)
+
+    local function pullAnnouncement()
+        local ok, data = dbCall("GET", "/announcement")
+        if not ok or type(data) ~= "table" or type(data.m) ~= "string" then return end
+
+        local msg = data.m:sub(1, 200)
+        local stamp = tonumber(data.t) or 0
+        announceLabel.Text = msg
+        if stamp <= cfg.lastAnnounce then return end
+
+        -- a brand new user shouldn't get an old announcement thrown at them
+        local seenBefore = cfg.lastAnnounce > 0
+        cfg.lastAnnounce = stamp
+        saveCfg()
+
+        log("Announcement: " .. msg)
+        addLine('<font color="#ffc43c"><b>[ANNOUNCEMENT]</b></font> ' .. esc(msg))
+        if (seenBefore or isOwner) and cfg.showAnnounce then
+            showBanner(msg, 8)
+        end
+    end
+
+    -- owner panel: only exists for OWNER_NAME
+    if isOwner then
+        section(globalPage, "Owner Panel")
+        local keyBox = textBox(globalPage, "Web API key", "Firebase > Project settings > Web API Key", ownerAuth.apiKey)
+        local emailBox = textBox(globalPage, "Owner email", "The email you made in Firebase", ownerAuth.email)
+        local passBox = textBox(globalPage, "Owner password", "Typed once, never saved", "")
+        button(globalPage, "Sign in as owner", pal.green, function()
+            local k = keyBox.Text:gsub("%s+", "")
+            local e = emailBox.Text:gsub("%s+", "")
+            local pw = passBox.Text
+            if k == "" or e == "" or pw == "" then
+                notify("Owner", "Fill in all three boxes", 3)
+                return
+            end
+            ownerAuth.apiKey = k
+            local ok, why = signIn(e, pw)
+            passBox.Text = ""
+            if ok then
+                notify("Owner", "Signed in", 3)
+            else
+                notify("Owner", "Sign-in failed: " .. tostring(why), 6)
+            end
+        end)
+
+        local annBox = textBox(globalPage, "Announcement", "Message for everyone using the script", "")
+        local function annText()
+            return annBox.Text:match("^%s*(.-)%s*$"):sub(1, 200)
+        end
+
+        button(globalPage, "Preview banner", pal.blue, function()
+            local msg = annText()
+            if msg == "" then
+                notify("Owner", "Type a message first", 2)
+                return
+            end
+            showBanner(msg, 6)
+        end)
+        button(globalPage, "Send announcement", pal.orange, function()
+            local msg = annText()
+            if msg == "" then
+                notify("Owner", "Type a message first", 2)
+                return
+            end
+            if not isAdmin() then
+                notify("Owner", "Sign in as owner first", 3)
+                return
+            end
+            if dbCall("PUT", "/announcement", { m = msg, by = plr.Name, t = { [".sv"] = "timestamp" } }, true) then
+                annBox.Text = ""
+                notify("Owner", "Announcement sent to everyone", 3)
+                pullAnnouncement()
+            else
+                notify("Owner", "Couldn't send, sign in again", 4)
+            end
+        end)
+        button(globalPage, "Copy my server Job ID", pal.teal, function()
+            local copy = setclipboard or toclipboard
+            if copy then
+                copy(game.JobId)
+                notify("Owner", "Job ID copied", 2)
+            else
+                notify("Owner", game.JobId, 6)
+            end
+        end)
+        text(globalPage, "Chat commands: /ban username, /unban username, /clear", {
+            Size = UDim2.new(1, 0, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            TextWrapped = true,
+            TextSize = 12,
+            TextColor3 = Color3.fromRGB(235, 215, 180),
+        })
+    end
+
+    section(globalPage, "Discord")
+    text(globalPage, DISCORD_LINK, { Size = UDim2.new(1, 0, 0, 18), TextSize = 13, TextColor3 = pal.blue })
+    button(globalPage, "Join our Discord", pal.blue, copyDiscord)
+
+    -- background updates
+    if DB ~= "" and http then
+        task.spawn(function()
+            local n = 0
+            while alive do
+                pcall(pullMessages)
+                if n % 5 == 0 then
+                    pcall(pullBans)
+                    pcall(pullAnnouncement)
+                    pcall(pushOnline)
+                    pcall(pullOnline)
+                end
+                n = n + 1
+                task.wait(4)
+            end
+        end)
+    end
+end)()
+
+-- tools tab (own function so the main chunk stays under the locals limit)
+;(function()
+    local toolsPage = tabs["Tools"].page
+    local RunService = game:GetService("RunService")
+    local Lighting = game:GetService("Lighting")
+
+    -- runs when the hub is closed, so rendering and graphics go back to normal
+    local function onClose(fn)
+        table.insert(conns, { Disconnect = function() pcall(fn) end })
+    end
+
+    local function myHumanoid()
+        return plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+    end
+
+    -- movement
+    section(toolsPage, "Movement")
+    toggle(toolsPage, "Custom walk speed", cfg.speedOn, function(v)
+        cfg.speedOn = v
+        saveCfg()
+    end)
+    slider(toolsPage, "Walk speed", 16, 80, cfg.walkSpeed, "", function(v)
+        cfg.walkSpeed = v
+        saveCfg()
+    end)
+    text(toolsPage, "Very high speeds can look suspicious or get you kicked in some games.", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        TextWrapped = true, TextSize = 12, TextColor3 = Color3.fromRGB(235, 215, 180),
+    })
+    toggle(toolsPage, "Infinite jump", cfg.infJump, function(v)
+        cfg.infJump = v
+        saveCfg()
+    end)
+
+    task.spawn(function()
+        local original
+        while alive do
+            local hum = myHumanoid()
+            if hum then
+                if cfg.speedOn then
+                    if hum.WalkSpeed ~= cfg.walkSpeed then
+                        original = original or hum.WalkSpeed
+                        hum.WalkSpeed = cfg.walkSpeed
+                    end
+                elseif original then
+                    hum.WalkSpeed = original
+                    original = nil
+                end
+            end
+            task.wait(0.25)
+        end
+    end)
+    on(UserInputService.JumpRequest, function()
+        if cfg.infJump and alive then
+            local hum = myHumanoid()
+            if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+        end
+    end)
+
+    -- performance
+    section(toolsPage, "Performance")
+    local savedQuality, savedShadows
+    local function setLowGfx(v)
+        pcall(function()
+            if v then
+                if savedQuality == nil then
+                    savedQuality = settings().Rendering.QualityLevel
+                    savedShadows = Lighting.GlobalShadows
+                end
+                settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+                Lighting.GlobalShadows = false
+            elseif savedQuality ~= nil then
+                settings().Rendering.QualityLevel = savedQuality
+                Lighting.GlobalShadows = savedShadows
+                savedQuality, savedShadows = nil, nil
+            end
+        end)
+    end
+    local function setRender(v)
+        pcall(function() RunService:Set3dRenderingEnabled(v) end)
+    end
+    toggle(toolsPage, "Low graphics", cfg.lowGfx, function(v)
+        cfg.lowGfx = v
+        saveCfg()
+        setLowGfx(v)
+    end)
+    toggle(toolsPage, "Turn off 3D rendering (AFK saver)", cfg.noRender, function(v)
+        cfg.noRender = v
+        saveCfg()
+        setRender(not v)
+    end)
+    if cfg.lowGfx then setLowGfx(true) end
+    if cfg.noRender then setRender(false) end
+    onClose(function()
+        setLowGfx(false)
+        setRender(true)
+    end)
+
+    -- stall routine
+    section(toolsPage, "Stall Routine")
+    slider(toolsPage, "Redo stalls every (0 = off)", 0, 30, cfg.repeatMin, " min", function(v)
+        cfg.repeatMin = v
+        saveCfg()
+    end)
+    toggle(toolsPage, "Hop if no stalls show up", cfg.hopNoStalls, function(v)
+        cfg.hopNoStalls = v
+        saveCfg()
+    end)
+
+    task.spawn(function()
+        local doneAt, emptyAt
+        while alive do
+            task.wait(3)
+
+            -- everything is done: start counting, then do them all again
+            if allDone then
+                doneAt = doneAt or os.clock()
+                if cfg.repeatMin > 0 and farmOn and os.clock() - doneAt >= cfg.repeatMin * 60 then
+                    doneAt = nil
+                    doneStalls, tries = {}, {}
+                    allDone, doneSent = false, false
+                    doneCount = 0
+                    log("Redoing every stall (timer)")
+                end
+            else
+                doneAt = nil
+            end
+
+            -- nothing to farm in this server
+            if cfg.hopNoStalls and farmOn and totalCount == 0 and not hopping then
+                emptyAt = emptyAt or os.clock()
+                if os.clock() - emptyAt > 45 then
+                    emptyAt = nil
+                    log("No stalls found here, hopping")
+                    hop()
+                    task.wait(20)
+                end
+            else
+                emptyAt = nil
+            end
+        end
+    end)
+
+    -- server tools
+    section(toolsPage, "Server")
+    local setJob = infoRow(toolsPage, "Job ID")
+    setJob(game.JobId ~= "" and game.JobId or "(none)", pal.white)
+
+    local tpUntil = 0
+    on(TeleportService.TeleportInitFailed, function()
+        if os.clock() < tpUntil then
+            cfg.hopHold = 0
+            writeJson(CONFIG_FILE, cfg)
+            notify("Teleport failed", "That server is full or closed", 4)
+        end
+    end)
+
+    local function goTo(jobId, holdHop)
+        if not jobId:match("^[%x%-]+$") or #jobId < 30 then
+            notify("Server", "That doesn't look like a Job ID", 3)
+            return
+        end
+        if holdHop then
+            cfg.hopHold = os.time() + 15 * 60 -- keeps auto hop from throwing you out right away
+            writeJson(CONFIG_FILE, cfg)
+        end
+        saveStatsNow()
+        local code = reloadCode()
+        if queueTp and code then pcall(queueTp, code) end
+        tpUntil = os.clock() + 20
+        log("Teleporting to server " .. jobId:sub(1, 8) .. "...")
+        local ok = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, plr)
+        end)
+        if not ok then notify("Server", "Couldn't start the teleport", 3) end
+    end
+
+    button(toolsPage, "Copy Job ID", pal.blue, function()
+        local copy = setclipboard or toclipboard
+        if copy and game.JobId ~= "" then
+            copy(game.JobId)
+            notify("Server", "Job ID copied", 2)
+        else
+            notify("Server", "Can't copy on this executor", 3)
+        end
+    end)
+    button(toolsPage, "Rejoin this server", pal.gold, function()
+        goTo(game.JobId, false)
+    end)
+    local jobBox = textBox(toolsPage, "Join a server by Job ID", "Paste a Job ID here", "")
+    button(toolsPage, "Join that server", pal.green, function()
+        goTo((jobBox.Text:gsub("%s+", "")), true)
+    end)
+end)()
 
 showTab("Main")
 
@@ -1455,57 +2301,6 @@ on(testBtn.Activated, function()
     end)
 end)
 
-on(sendChatBtn.Activated, function()
-    local msg = chatInput.Text:match("^%s*(.-)%s*$") or ""
-    if msg == "" then
-        notify("Chat", "Type a message first", 2)
-        return
-    end
-    chatInput.Text = ""
-    addChatMsg(plr.DisplayName, msg, false)
-    log("Global chat: " .. msg)
-    if cfg.webhookOn and validHook(cfg.webhookUrl) then
-        task.spawn(function()
-            pcall(postWebhook, buildEmbed("Global Chat", 0x9B59B6, "**" .. plr.DisplayName .. "**: " .. msg))
-        end)
-    end
-    notify("Chat", "Message sent", 2)
-end)
-
-if isOwner then
-    section(globalPage, "Owner Announcement")
-    local annBox = textBox(globalPage, "Announcement text", "Type your global announcement here", "")
-    button(globalPage, "Send Global Announcement", pal.gold, function()
-        local msg = annBox.Text:match("^%s*(.-)%s*$") or ""
-        if msg == "" then
-            notify("Announcement", "Type a message first", 2)
-            return
-        end
-        addChatMsg("OWNER", msg, true)
-        log("Owner announcement: " .. msg)
-        if validHook(cfg.webhookUrl) then
-            task.spawn(function()
-                local ok, sent, err = pcall(postWebhook, buildEmbed("GLOBAL ANNOUNCEMENT", 0xFFD700, msg))
-                if ok and sent then
-                    notify("Announcement", "Sent to all users", 3)
-                else
-                    notify("Announcement", "Local only: " .. tostring(ok and err or sent), 4)
-                end
-            end)
-        else
-            notify("Announcement", "Sent locally (set webhook for all users)", 3)
-        end
-    end)
-else
-    text(globalPage, "Only the owner can send global announcements.", {
-        Size = UDim2.new(1, 0, 0, 0),
-        AutomaticSize = Enum.AutomaticSize.Y,
-        TextWrapped = true,
-        TextSize = 13,
-        TextColor3 = Color3.fromRGB(235, 215, 180),
-    })
-end
-
 -- server hop
 on(TeleportService.TeleportInitFailed, function()
     hopping = false
@@ -1663,6 +2458,9 @@ task.spawn(function()
             if child.Name == "ErrorPrompt" and cfg.autoRejoin and alive and os.clock() - lastTry > 10 then
                 lastTry = os.clock()
                 log("Got disconnected, rejoining...")
+                if cfg.hookKick then
+                    pcall(queueWebhook, buildEmbed("Disconnected", 0xE84040, "Got kicked or disconnected, rejoining."))
+                end
                 task.wait(3)
                 hop()
             end
@@ -1694,6 +2492,8 @@ task.spawn(function()
             setServer(#Players:GetPlayers() .. "/" .. Players.MaxPlayers .. " players")
             setStalls(doneCount .. "/" .. totalCount .. " done")
             setSession(string.format("%d pressed, %d hops, %s", stats.fired, stats.hops, fmtTime(os.time() - stats.start)))
+            local mins = (os.time() - stats.start) / 60
+            setRate(mins < 2 and "-" or string.format("%.0f prompts / hour", stats.fired / mins * 60))
         end)
         task.wait(1)
     end
@@ -1741,78 +2541,21 @@ if not hasFiles then
     log("No file functions here, so settings won't be saved")
 end
 
-local function startHub()
-    if AUTO_START then
-        farmOn = true
-        startFarm()
+if AUTO_START then
+    farmOn = true
+    startFarm()
+    if os.time() >= cfg.hopHold then
         hopOn = true
         startHopTimer()
-    end
-    if cfg.hookStart then
-        task.delay(5, function()
-            if alive then
-                queueWebhook(buildEmbed("Hub started", 0xFF8C42, "Script loaded in this server."))
-            end
-        end)
+    else
+        log("Auto hop is paused for a while because you joined a player")
     end
 end
 
-if isOwner or cfg.accepted then
-    startHub()
-else
-    local joinFrame = new("Frame", {
-        Size = UDim2.fromScale(1, 1),
-        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
-        BackgroundTransparency = 0.4,
-        ZIndex = 50,
-    }, gui)
-    local joinCard = new("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.fromOffset(360, 220),
-        BackgroundColor3 = pal.wood,
-        BorderSizePixel = 0,
-        ZIndex = 51,
-    }, joinFrame)
-    corner(joinCard, 12)
-    outline(joinCard, pal.gold, 3)
-    text(joinCard, "Join Karinderya Hub", {
-        Position = UDim2.fromOffset(0, 16),
-        Size = UDim2.new(1, 0, 0, 28),
-        TextSize = 20,
-        TextXAlignment = Enum.TextXAlignment.Center,
-        TextColor3 = pal.gold,
-        ZIndex = 52,
-    })
-    text(joinCard, "Accept to join the community and unlock the script. You get access to global chat on Discord.", {
-        Position = UDim2.fromOffset(20, 52),
-        Size = UDim2.new(1, -40, 0, 60),
-        TextSize = 13,
-        TextWrapped = true,
-        TextXAlignment = Enum.TextXAlignment.Center,
-        TextColor3 = Color3.fromRGB(235, 215, 180),
-        ZIndex = 52,
-    })
-    text(joinCard, DISCORD_LINK, {
-        Position = UDim2.fromOffset(0, 115),
-        Size = UDim2.new(1, 0, 0, 18),
-        TextSize = 12,
-        TextXAlignment = Enum.TextXAlignment.Center,
-        TextColor3 = pal.cash,
-        ZIndex = 52,
-    })
-    local acceptHolder, acceptBtn = chunky(joinCard, "Accept and Join", pal.green, UDim2.new(0.7, 0, 0, 40), 16)
-    acceptHolder.AnchorPoint = Vector2.new(0.5, 1)
-    acceptHolder.Position = UDim2.new(0.5, 0, 1, -20)
-    acceptHolder.ZIndex = 52
-    acceptBtn.ZIndex = 53
-    on(acceptBtn.Activated, function()
-        pop(acceptHolder)
-        cfg.accepted = true
-        saveCfg()
-        joinFrame:Destroy()
-        notify("Welcome", "You joined the community", 3)
-        log("Community accepted")
-        startHub()
+if cfg.hookStart then
+    task.delay(5, function()
+        if alive then
+            queueWebhook(buildEmbed("Hub started", 0xFF8C42, "Script loaded in this server."))
+        end
     end)
 end
